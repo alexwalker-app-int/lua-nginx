@@ -1,0 +1,122 @@
+worker_processes auto;
+pcre_jit on;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    types_hash_max_size 2048;
+    include mime.types;
+    default_type application/octet-stream;
+    gzip on;
+
+    log_format json_combined escape=json
+    '{'
+    '"time_local":"$time_local",'
+    '"remote_addr":"$remote_addr",'
+    '"remote_user":"$remote_user",'
+    '"request":"$request",'
+    '"status": "$status",'
+    '"body_bytes_sent":"$body_bytes_sent",'
+    '"request_time":"$request_time",'
+    '"http_referrer":"$http_referer",'
+    '"http_user_agent":"$http_user_agent"'
+    '}';
+
+    access_log /dev/stdout json_combined;
+
+    lua_package_path "/etc/lua-plugins/?.lua;;";
+    more_clear_headers Server;
+    server_tokens off;
+
+    server {
+        listen $APP_PORT;
+        server_name $SERVER_NAME walker-works localhost;
+        resolver $DNS_RESOLVER;
+        client_header_buffer_size 8k;
+        large_client_header_buffers 8 64k;
+
+        ## error logging goes down, e.g error -> error,crit,alert,emerg
+        #debug - Debugging messages.
+        #info - Informational messages.
+        #notice - Notices.
+        #warn - Warnings.
+        #error - Errors while processing a request.
+        #crit - Critical issues. Requires a prompt action.
+        #alert - Alerts. Action must be taken immediately.
+        #emerg - Emergency situation. The system is in an unusable state.
+        error_log /dev/stdout debug;
+
+        location ~* \.(?:ico|css|js|gif|jpe?g|png|woff2|woff|ttf)$ {
+            root /usr/share/nginx/html;
+            index index.html index.htm;
+        }
+
+        location ^~ /butter-bot {
+            add_header Content-Type text/html;
+            header_filter_by_lua_block {
+                ngx.header.content_length = nil;
+            }
+            body_filter_by_lua_file /etc/lua-plugins/regex-injector.lua;
+            return 200 '<html><body><img src="https://static.wikia.nocookie.net/rickandmorty/images/6/67/Butter_Robot_Picture.png"></body></html>';
+        }
+
+        location ^~ /nginx {
+            default_type text/html;
+            # required environment variables
+            set $mitigation_api_key "$MITIGATION_API_KEY";
+            set $detection_tag_ci "$DETECTION_TAG_CI";
+            set $detection_tag_dt "$DETECTION_TAG_DT";
+            set $detection_tag_host "$DETECTION_TAG_HOST";
+            set $detection_tag_path "$DETECTION_TAG_PATH";
+
+            # optional environment variables
+            set $intercept_enabled "$INTERCEPT_ENABLED";
+            set $block_redirect_url "$BLOCK_REDIRECT_URL";
+            set $block_redirect_status_code "$BLOCK_REDIRECT_STATUS_CODE";
+            set $detection_tag_spa "$DETECTION_TAG_SPA";
+            set $detection_tag_mo "2";
+            set $block_spa_response_code "$BLOCK_REDIRECT_STATUS_CODE";
+            set $block_spa_response_body '{"error":"there seems to be an error in your request"}';
+
+            set $mitigation_api_scheme "$MITIGATION_API_SCHEME";
+            set $mitigation_api_host "$MITIGATION_API_HOST";
+            set $mitigation_api_port "$MITIGATION_API_PORT";
+            set $mitigation_api_ssl_verify "$MITIGATION_API_SSL_VERIFY";
+            set $mitigation_api_path "$MITIGATION_API_PATH";
+            set $custom_fields "$http_X_custom_content";
+
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $remote_addr;
+
+            # nginx must reset the content_length as we are changing it in injector.lua
+            header_filter_by_lua_block {
+                ngx.header.content_length = nil;
+            }
+            body_filter_by_lua_file /etc/lua-plugins/injector.lua;
+            add_header X-Custom-Content "$http_X_custom_content" always; #debugging. Adds the custom content header to the response
+            access_by_lua_file /etc/lua-plugins/mitigation.lua;
+
+            proxy_pass http://localhost:$BACKEND_PORT;
+        }
+
+        location / {
+            default_type text/html;
+
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $remote_addr;
+
+            proxy_pass http://localhost:$BACKEND_PORT;
+        }
+
+        error_page 500 502 503 504 /50x.html;
+        location = /50x.html {
+            root html;
+        }
+    }
+}
